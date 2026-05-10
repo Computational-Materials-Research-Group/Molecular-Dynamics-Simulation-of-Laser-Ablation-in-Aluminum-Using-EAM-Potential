@@ -1,0 +1,128 @@
+# ============================================================
+#  LAMMPS: Laser Cutting a Circular Hole from a Thin Al Sheet
+#  Potential: Al99.eam.alloy
+#  Fix: Cylinder region for perfect circular cut
+# ============================================================
+
+# --------------- Initialization ---------------
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+# --------------- Variables ---------------
+variable        lx      equal 150.0       # sheet length X (Angstrom)
+variable        ly      equal 150.0       # sheet length Y (Angstrom)
+variable        lz      equal 20.0        # sheet thickness Z (Angstrom)
+
+variable        cx      equal 75.0        # cylinder center X
+variable        cy      equal 75.0        # cylinder center Y
+variable        radius  equal 40.0        # laser-cut cylinder radius (Angstrom)
+
+variable        T_laser equal 10000.0     # laser heating temperature (K)
+variable        T_init  equal 300.0       # initial temperature (K)
+variable        dt      equal 0.001       # timestep (ps)
+
+# --------------- Create Lattice & Box ---------------
+lattice         fcc 4.05                  # Al FCC lattice parameter
+region          box block 0 ${lx} 0 ${ly} 0 ${lz} units box
+create_box      1 box
+
+# --------------- Create Atoms (Sheet) ---------------
+region          sheet block 0 ${lx} 0 ${ly} 0 ${lz} units box
+create_atoms    1 region sheet
+
+# --------------- Assign Mass & Potential ---------------
+mass            1 26.982                  # Aluminum atomic mass
+
+pair_style      eam/alloy
+pair_coeff      * * Al99.eam.alloy Al
+
+# --------------- Neighbor Settings ---------------
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+# --------------- Initial Velocities ---------------
+velocity        all create ${T_init} 12345 mom yes rot yes dist gaussian
+
+# --------------- Define Laser-Cut Region (Cylinder through full Z) ---------------
+region          cut_cylinder cylinder z ${cx} ${cy} ${radius} 0 ${lz} units box
+
+# --------------- Groups ---------------
+group           laser_zone   region  cut_cylinder
+group           bulk_sheet   subtract all laser_zone
+
+# --------------- Thermodynamics Output ---------------
+thermo          100
+thermo_style    custom step temp pe ke etotal press vol
+
+# --------------- Dump All Atoms ---------------
+dump            1 all custom 500 dump_laser_cut.lammpstrj id type x y z vx vy vz
+dump_modify     1 sort id
+
+# ============================================================
+#  STAGE 1: Equilibration of the Full Sheet at 300 K
+# ============================================================
+fix             1 all nvt temp ${T_init} ${T_init} 0.1
+timestep        ${dt}
+
+run             5000
+
+unfix           1
+
+# ============================================================
+#  STAGE 2: Laser Heating — Ramp Temperature in Cylinder Zone
+#           Simulates energy deposition by laser
+# ============================================================
+fix             2 bulk_sheet nvt temp ${T_init} ${T_init} 0.1
+fix             3 laser_zone nvt temp ${T_init} ${T_laser} 0.1
+
+run             3000
+
+unfix           3
+
+# ============================================================
+#  STAGE 3: Hold — Material in Laser Zone at High Temperature
+#           (melting / ablation phase)
+# ============================================================
+fix             4 laser_zone nvt temp ${T_laser} ${T_laser} 0.1
+
+run             5000
+
+unfix           4
+
+# ============================================================
+#  STAGE 4: Delete Atoms in the Cut Cylinder Region
+#           (material removal — laser cut complete)
+# ============================================================
+delete_atoms    region cut_cylinder
+
+# Redefine group after deletion
+group           remaining_sheet type 1
+
+# ============================================================
+#  STAGE 5: Quench — Cool Remaining Sheet Back to 300 K
+# ============================================================
+fix             5 remaining_sheet nvt temp ${T_laser} ${T_init} 0.1
+
+run             5000
+
+unfix           5
+
+# ============================================================
+#  STAGE 6: Final Relaxation at 300 K
+# ============================================================
+fix             6 remaining_sheet nvt temp ${T_init} ${T_init} 0.1
+
+run             5000
+
+unfix           6
+
+# --------------- Final Snapshot ---------------
+write_data      final_sheet_after_laser_cut.data
+write_restart   final_sheet.restart
+
+print "============================================"
+print " Laser cutting simulation complete."
+print " Perfect circular hole cut in Al sheet."
+print "============================================"
